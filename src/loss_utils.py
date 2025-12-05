@@ -35,7 +35,6 @@ class Loss(nn.Module, metaclass=ABCMeta):
     def forward(self, model_output):
         ...
 
-
 class L2Loss(Loss):
     def __init__(self, key):
         super(L2Loss, self).__init__(key)
@@ -54,15 +53,11 @@ class MultiChoiceL2Loss(Loss):
     def forward(self, model_output):
         pred_key = model_output[self.key] # (K B) 1 H W
         gt_key = model_output[self.key + '_gt'] # B 1 H W
-        # print(pred_key.shape, gt_key.shape)
         pred_key = pred_key.reshape(-1, *gt_key.shape)
-        # print(pred_key.shape, gt_key.shape)
         loss = ( (real(pred_key) - real(gt_key)) ** 2
                 +   (imag(pred_key) - imag(gt_key)) ** 2 ).mean(axis=(-1, -2, -3)) # K B
-        # print(loss.shape)
         min_loss, min_idxs = torch.min(loss, dim=0)
         model_output['activated_paths'] = min_idxs.long()
-        # model_output['num_modes'] = pred_key.shape[0]
         return min_loss.mean()
 
 class L2LossPreFlip(Loss):
@@ -123,9 +118,7 @@ class L2LossPreFlip(Loss):
         model_output["activated_paths"] = activated_paths.long()
         model_output["mean_diff_paths"] = torch.abs(distance_double[0] - distance_double[1]).mean()
         model_output['num_modes'] = K
-        # print((self.beta * pred_prob[activated_paths]).mean())
-        return min_distances.mean() #+ (self.beta * pred_prob[activated_paths]).mean()
-
+        return min_distances.mean()
 
 class PriorLoss(Loss):
     def __init__(self, beta=3e-5):

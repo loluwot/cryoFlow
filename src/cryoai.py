@@ -106,29 +106,12 @@ class CryoAI(nn.Module):
             self.latent_to_rot3d_fn = rotation_6d_to_matrix
         elif self.config.so3_parameterization == 'gt':
             self.latent_to_rot3d_fn = None
-        elif self.config.so3_parameterization == 'convex_gradient':
-            # self.orientation_dims = ConvexGradientLayer.n_features(config) + 3
+        elif self.config.so3_parameterization == 'convex_gradient': ## our SO(3) representation
             self.orientation_dims = ConvexGradientLayer.n_features(config)
             self.last_nonlinearity = None
             def latent_to_rot3d_(x):
                 res, prob = ConvexGradientLayer.sample_mode(ConvexGradientLayer.process_params(x), k=config.num_modes, num_samples=self.config.num_samples)
                 return quaternion_to_matrix(res), prob
-            
-            # def latent_to_rot3d_(x):
-            #     enc, scales = x.split([x.shape[-1] - 3, 3], dim=-1)
-            #     scales = F.softmax(scales).double()
-            #     params = ConvexGradientLayer.process_params(enc)
-            #     locs = ConvexGradientLayer.sample_mode(params).double()
-            #     locs = quaternion_to_matrix(locs)
-
-            #     alg_distr = Normal(torch.zeros_like(scales), scales)
-            #     transforms = [SO3ExpTransform(k_max=3), SO3MultiplyTransform(locs)]
-            #     group_distr = LDTD(alg_distr, transforms)
-                
-            #     z = group_distr.rsample()
-            #     prob = group_distr.log_prob(z)
-            #     return z.float(), prob.float()
-            
             self.latent_to_rot3d_fn = latent_to_rot3d_
             self.use_prob = True
             

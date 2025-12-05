@@ -43,7 +43,6 @@ class ConstantScheduler:
 scheduler_dict = {'constant': ConstantScheduler, 
                   'linear': LinearScheduler}
 
-
 class FrequencyMarcher(SchedulerBase):
     def __init__(self, model, img_sz, test_convergence_every, freq_max=-1, freq_init=15, freq_step=20,
                  epsilon_convergence=18.0):
