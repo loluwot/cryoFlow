@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from abc import ABCMeta, abstractmethod
+from .scheduler_utils import LinearScheduler, ConstantScheduler, scheduler_dict
 
 
 def real(tensor):
@@ -46,19 +47,39 @@ class L2Loss(Loss):
         return    ( (real(pred_key) - real(gt_key)) ** 2
                 +   (imag(pred_key) - imag(gt_key)) ** 2 ).mean()
 
+class MultiChoiceL2Loss(Loss):
+    def __init__(self, key):
+        super(MultiChoiceL2Loss, self).__init__(key)
+
+    def forward(self, model_output):
+        pred_key = model_output[self.key] # (K B) 1 H W
+        gt_key = model_output[self.key + '_gt'] # B 1 H W
+        # print(pred_key.shape, gt_key.shape)
+        pred_key = pred_key.reshape(-1, *gt_key.shape)
+        # print(pred_key.shape, gt_key.shape)
+        loss = ( (real(pred_key) - real(gt_key)) ** 2
+                +   (imag(pred_key) - imag(gt_key)) ** 2 ).mean(axis=(-1, -2, -3)) # K B
+        # print(loss.shape)
+        min_loss, min_idxs = torch.min(loss, dim=0)
+        model_output['activated_paths'] = min_idxs.long()
+        # model_output['num_modes'] = pred_key.shape[0]
+        return min_loss.mean()
 
 class L2LossPreFlip(Loss):
-    def __init__(self, key, mask=False, hf_increase=False, hf_coeff=1e0, mask_rad=0.75):
+    def __init__(self, key, mask=False, hf_increase=False, hf_coeff=1e0, mask_rad=0.75, beta=3e-5):
         super(L2LossPreFlip, self).__init__(key)
         self.use_mask = mask
         self.hf_increase = hf_increase
         self.hf_coeff = hf_coeff
         self.mask_rad = mask_rad
+        self.beta = beta
 
     def forward(self, model_output):
         pred_key = model_output[self.key]  # 2 * B, 1, img_sz, img_sz
+        pred_prob = model_output['prob']
+        
         gt_key = model_output[self.key + '_gt'].permute(1, 0, 2, 3)  # 1, B, img_sz, img_sz
-
+        K = pred_key.shape[0] // gt_key.shape[1] // 2
         if self.use_mask:
             img_sz = pred_key.shape[-1]
             mask = (torch.linspace(-1, 1, img_sz)[None] ** 2 + torch.linspace(-1, 1, img_sz)[:, None] ** 2) <\
@@ -81,27 +102,42 @@ class L2LossPreFlip(Loss):
             pred_key_weighted = pred_key_masked
             gt_key_weighted = gt_key_masked
 
-        pred_double = pred_key_weighted.reshape(2, -1, pred_key.shape[2], pred_key.shape[3]) # 2, B, img_sz, img_sz
+        pred_double = pred_key_weighted.reshape(K, 2, -1, pred_key.shape[2], pred_key.shape[3]) # K, 2, B, img_sz, img_sz
         # Unflip
-        pred_double[1] = torch.flip(pred_double[1], [1, 2])
+        pred_double[:, 1] = torch.flip(pred_double[:, 1], [-1, -2])
         # Place DC at expected position in fourier
-        if self.key == 'fproj':
-            pred_double[1] = torch.roll(pred_double[1], shifts=(1, 1), dims=(1, 2))
+        # if self.key == 'fproj':
+        #     pred_double[1] = torch.roll(pred_double[1], shifts=(1, 1), dims=(1, 2))
 
         distance_double = torch.mean((real(pred_double) - real(gt_key_weighted)) ** 2 +
                                    (imag(pred_double) - imag(gt_key_weighted)) ** 2,
-                                     (2, 3))
+                                     (-1, -2)) # K 2 B 
+        distance_double = distance_double.reshape(K*2, -1)
+        
         min_argmin = torch.min(distance_double, 0)
         min_distances = min_argmin[0] # B
 
         # Keep track of activated paths
         activated_paths = min_argmin[1] # B
+        
         model_output["activated_paths"] = activated_paths.long()
         model_output["mean_diff_paths"] = torch.abs(distance_double[0] - distance_double[1]).mean()
+        model_output['num_modes'] = K
+        # print((self.beta * pred_prob[activated_paths]).mean())
+        return min_distances.mean() #+ (self.beta * pred_prob[activated_paths]).mean()
 
-        return min_distances.mean()
 
-
+class PriorLoss(Loss):
+    def __init__(self, beta=3e-5):
+        super(PriorLoss, self).__init__('prob')
+        self.beta = beta
+    
+    def forward(self, model_output):
+        pred_prob = model_output['prob']
+        if 'activated_paths' in model_output:
+            pred_prob = pred_prob[model_output['activated_paths']]
+        return (self.beta.update() * pred_prob).mean()
+        
 class L1Loss(Loss):
     def __init__(self, key):
         super(L1Loss, self).__init__(key)
@@ -141,7 +177,8 @@ def loss_factory(config):
     # Data Loss
     if config.data_loss_domain == 'primal':
         if config.data_loss_norm == 'L2':
-            loss_dict['data_term'] = L2Loss('proj')
+            # loss_dict['data_term'] = L2Loss('proj')
+            loss_dict['data_term'] = MultiChoiceL2Loss('proj')
         elif config.data_loss_norm == 'L1':
             loss_dict['data_term'] = L1Loss('proj')
         elif config.data_loss_norm == 'symloss':
@@ -155,7 +192,8 @@ def loss_factory(config):
             print("Unrecognized data loss norm.")
     elif config.data_loss_domain == 'fourier':
         if config.data_loss_norm == 'L2':
-            loss_dict['data_term'] = L2Loss('fproj')
+            # loss_dict['data_term'] = L2Loss('fproj')
+            loss_dict['data_term'] = MultiChoiceL2Loss('fproj')
         elif config.data_loss_norm == 'L1':
             loss_dict['data_term'] = L1Loss('fproj')
         elif config.data_loss_norm == 'symloss':
@@ -168,6 +206,9 @@ def loss_factory(config):
             raise NotImplementedError
     else:
         raise NotImplementedError
+
+    beta_scheduler = scheduler_dict[config.beta_scheduler](v0=0, v1=config.beta, num_steps=config.beta_scheduler_steps) 
+    loss_dict['prior'] = PriorLoss(beta=beta_scheduler)
 
     # Contrastive Loss
     if not config.so3_parameterization == 'gt' and config.use_contrastive_loss:

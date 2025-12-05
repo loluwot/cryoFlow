@@ -15,6 +15,34 @@ class SchedulerBase(metaclass=ABCMeta):
     def set_writer(self, writer):
         ...
 
+class LinearScheduler:
+    def __init__(self, v0=0, v1=1, num_steps=1000):
+        self.v0 = v0
+        self.v1 = v1
+        self.step_count = 0
+        self.num_steps = num_steps
+        
+    def update(self):
+        self.step_count += 1
+        self.step_count = min(self.step_count, self.num_steps)
+        return self.value()
+        
+    def value(self):
+        return self.step_count / self.num_steps * (self.v1 - self.v0) + self.v0
+
+class ConstantScheduler:
+    def __init__(self, v0=0, **kwargs):
+        self.v0 = v0
+        
+    def update(self):
+        return self.value()
+        
+    def value(self):
+        return self.v0
+    
+scheduler_dict = {'constant': ConstantScheduler, 
+                  'linear': LinearScheduler}
+
 
 class FrequencyMarcher(SchedulerBase):
     def __init__(self, model, img_sz, test_convergence_every, freq_max=-1, freq_init=15, freq_step=20,

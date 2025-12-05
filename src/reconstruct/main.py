@@ -35,6 +35,8 @@ def init_config(parser):
                         help='The learning rate of the encoder is multiplied by lr_encoder_scaling.')
     parser.add_argument('--optimizer', type=str, choices=['Adam', 'SGD'], default='Adam',
                         help='Type of optimizer.')
+    
+    
     # Summary / Checkpoints
     parser.add_argument('--steps_til_light_summary', type=int, default=100,
                         help='The number of steps (in #batches) between light summaries.')
@@ -86,9 +88,13 @@ def init_config(parser):
     parser.add_argument('--regressor_shift_layers', type=list, default=[512, 256],  # [1024, 512, 256]
                         help="Number of features in the FC layers of the shift regressor.")
     parser.add_argument('--so3_parameterization', type=str, default='s2s2',
-                        choices=['s2s2', 'euler', 'quaternion', 'gt'],
+                        choices=['s2s2', 'euler', 'quaternion', 'gt', 'convex_gradient'],
                         help='The parameterization of SO3 influences the interpretation of the output of the'
                              ' orientation regressor.')
+    parser.add_argument('--hidden_norm_size', type=int, default=16)
+    parser.add_argument('--num_samples', type=int, default=200)
+    parser.add_argument('--num_modes', type=int, default=1,
+                        help='Number of modes to sample')
     parser.add_argument('--pose_estimation', type=str, default='encoder', choices=['encoder', 'gt'],
                         help="Estimation of the poses using an encoder of an autodecoder (static-learnt)")
     # Volume representation
@@ -126,6 +132,11 @@ def init_config(parser):
     # Loss
     parser.add_argument('--data_loss_domain', type=str, default='primal', choices=['primal', 'fourier'],
                         help='In which domain should the data loss operate?')
+    parser.add_argument('--beta', type=float, default=3e-5,
+                        help='Beta scaling for KL div. to prior')
+    parser.add_argument('--beta_scheduler', type=str, default='constant', choices=['constant', 'linear'])
+    parser.add_argument('--beta_scheduler_steps', type=int, default=3000)
+    
     parser.add_argument('--data_loss_norm', type=str, default='symloss',
                         choices=['L1', 'L2', 'symloss'],
                         help='Norm for data loss.')
@@ -233,6 +244,8 @@ def main():
                                                          " parameterization of SO(3)"
     if config.data_loss_norm == 'symloss':
         config.flip_images = 1
+    else:
+        config.flip_images = 0
     if config.mask_rad > 1e-3:
         assert config.mask_rad >= config.mask_rad_loss, "The mask on the loss must be smaller than" \
                                                         " the mask on the input images"

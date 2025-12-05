@@ -139,7 +139,8 @@ def train(model,
           fast_mode=False,
           write_mrc=False,
           flip_images=False,
-          print_times=False
+          print_times=False,
+          num_modes=1
           ):
     """
     Trains a model.
@@ -244,7 +245,11 @@ def train(model,
                     if flip_images:
                         rotmat_pred = correct_flips_rotations(chunked_model_output)
                     else:
-                        rotmat_pred = chunked_model_output['rotmat']
+                        if num_modes > 1:
+                            rotmat_ = chunked_model_output['rotmat'].reshape(num_modes, -1, 3, 3) # K B 3 3
+                            rotmat_pred = rotmat_[chunked_model_output['activated_paths'], torch.arange(rotmat_.shape[1])] # B 3 3
+                        else:
+                            rotmat_pred = chunked_model_output['rotmat']
                     rots_pred[ind] = rotmat_pred.detach().cpu().numpy()
 
                 # Write losses in tensorboard

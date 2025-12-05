@@ -59,5 +59,6 @@ def experiment(config):
           fast_mode=config.fast_mode,
           write_mrc=config.write_mrc,
           flip_images=config.flip_images,
-          print_times=config.print_times
+          print_times=config.print_times,
+          num_modes=config.num_modes
           )

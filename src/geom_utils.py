@@ -135,7 +135,6 @@ def align_rot(r1, r2, i, flip=False):
     else:
         return np.matmul(r2, get_ref_matrix(r1, r2, i, flip=False))
 
-
 def correct_flips_rotations(model_output):
     """
     Corrects the in-plane flip due to the symmetrized loss.
@@ -149,12 +148,13 @@ def correct_flips_rotations(model_output):
     -------
     rotmat_pred: torch.Tensor (B, 3, 3)
     """
-    rotmat_pred = model_output['rotmat'].reshape(2, -1, 3, 3)  # 2, B, 3, 3
+    K = model_output['num_modes']
+    rotmat_pred = model_output['rotmat'].reshape(K*2, -1, 3, 3)  # 2, B, 3, 3
     batch_size = rotmat_pred.shape[1]
     idx = model_output['activated_paths'].reshape(1, batch_size, 1, 1).repeat(1, 1, 3, 3)
     rotmat_pred = rotmat_pred.gather(0, idx).reshape(batch_size, 3, 3)  # B, 3, 3
     euler_pred = matrix_to_euler_angles(rotmat_pred, 'ZYZ')  # B, 3
-    additional_alpha = torch.tensor([np.pi] * batch_size).cuda() * model_output['activated_paths'] # N
+    additional_alpha = torch.tensor([np.pi] * batch_size).cuda() * (model_output['activated_paths'] % 2) # N
     euler_pred[:, 0] = euler_pred[:, 0] + additional_alpha
     rotmat_pred = euler_angles_to_matrix(euler_pred, 'ZYZ')  # B, 3, 3
     return rotmat_pred

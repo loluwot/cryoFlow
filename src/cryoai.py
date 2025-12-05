@@ -9,12 +9,21 @@ from .shift_utils import Shift, ShiftIdentity
 from .volume_utils import ImplicitFourierVolume
 from .filter_utils import GaussianPyramid
 from .scheduler_utils import FrequencyMarcher
+from .flow_utils import ConvexGradientLayer
 from .geom_utils import add_flipped_rotmat
 from pytorch3d.transforms import rotation_6d_to_matrix, euler_angles_to_matrix, quaternion_to_matrix
 import os
+from einops import rearrange
+import torch.nn.functional as F
 import time
 
-
+from .relie import (
+    SO3ExpTransform,
+    SO3MultiplyTransform,
+    LocalDiffeoTransformedDistribution as LDTD
+)
+from torch.distributions import TransformedDistribution, Normal
+K = 1
 class CryoAI(nn.Module):
     def __init__(self, config):
         """
@@ -27,7 +36,8 @@ class CryoAI(nn.Module):
         super(CryoAI, self).__init__()
         self.config = config
         self.sidelen_input = config.side_len * config.side_len_input_output_ratio
-
+        self.num_modes = config.num_modes
+        
         # Schedulers
         self.schedulers = {}
         if config.use_frequency_marcher:
@@ -77,6 +87,7 @@ class CryoAI(nn.Module):
             raise NotImplementedError
 
         # Orientation regressors
+        self.use_prob = False
         if self.config.so3_parameterization == 'euler':
             self.orientation_dims = 3
             self.equiv_dims = 1
@@ -95,7 +106,32 @@ class CryoAI(nn.Module):
             self.latent_to_rot3d_fn = rotation_6d_to_matrix
         elif self.config.so3_parameterization == 'gt':
             self.latent_to_rot3d_fn = None
+        elif self.config.so3_parameterization == 'convex_gradient':
+            # self.orientation_dims = ConvexGradientLayer.n_features(config) + 3
+            self.orientation_dims = ConvexGradientLayer.n_features(config)
+            self.last_nonlinearity = None
+            def latent_to_rot3d_(x):
+                res, prob = ConvexGradientLayer.sample_mode(ConvexGradientLayer.process_params(x), k=config.num_modes, num_samples=self.config.num_samples)
+                return quaternion_to_matrix(res), prob
+            
+            # def latent_to_rot3d_(x):
+            #     enc, scales = x.split([x.shape[-1] - 3, 3], dim=-1)
+            #     scales = F.softmax(scales).double()
+            #     params = ConvexGradientLayer.process_params(enc)
+            #     locs = ConvexGradientLayer.sample_mode(params).double()
+            #     locs = quaternion_to_matrix(locs)
 
+            #     alg_distr = Normal(torch.zeros_like(scales), scales)
+            #     transforms = [SO3ExpTransform(k_max=3), SO3MultiplyTransform(locs)]
+            #     group_distr = LDTD(alg_distr, transforms)
+                
+            #     z = group_distr.rsample()
+            #     prob = group_distr.log_prob(z)
+            #     return z.float(), prob.float()
+            
+            self.latent_to_rot3d_fn = latent_to_rot3d_
+            self.use_prob = True
+            
         if config.pose_estimation == 'encoder':
             if self.latent_to_rot3d_fn is not None:
                 # We split the regressor in 2 to have access to the latent code
@@ -204,6 +240,7 @@ class CryoAI(nn.Module):
         latent_code = None
 
         # Poses
+        prob = torch.zeros(proj.shape[0]).to(proj)
         if self.config.so3_parameterization == 'gt':
             pred_rotmat = in_dict['rotmat']
             latent_code_prerot = None
@@ -222,9 +259,10 @@ class CryoAI(nn.Module):
 
             # Interpret the latent code as a rotation
             pred_rotmat = self.latent_to_rot3d_fn(latent_code_prerot)
-
+            if self.use_prob:
+                pred_rotmat, prob = pred_rotmat
+        
         encoder_time = time.time()
-
         # Shift
         if self.config.use_shift == 'gt':
             pred_shift_params = {k: in_dict[k] for k in ('shiftX', 'shiftY')
@@ -252,24 +290,26 @@ class CryoAI(nn.Module):
 
         # Query the volume (slicing / projection)
         pred_fproj_prectf = self.pred_map(pred_rotmat)
-
         decoder_time = time.time()
 
         # Apply the remaining step of the forward model: CTF + Shift
-        pred_fproj = self.ctf(
+        pred_fproj_prectf = rearrange(pred_fproj_prectf, '(n b) ... -> n b ...', n=self.num_modes)
+        pred_fproj = torch.vmap(self.ctf, in_dims=(0, None, None, None, None))(
             pred_fproj_prectf,
             in_dict['idx'],
             pred_ctf_params,
-            mode=self.config.use_ctf,
-            frequency_marcher=self.frequency_marcher
+            self.config.use_ctf,
+            self.frequency_marcher
         )
-        pred_fproj = self.shift(
+        pred_fproj = torch.vmap(self.shift, in_dims=(0, None, None, None, None))(
             pred_fproj,
             in_dict['idx'],
             pred_shift_params,
-            mode=self.config.use_shift,
-            frequency_marcher=self.frequency_marcher
+            self.config.use_shift,
+            self.frequency_marcher
         )
+        pred_fproj = rearrange(pred_fproj, 'n b ... -> (n b) ...')
+        pred_fproj_prectf = rearrange(pred_fproj_prectf, 'n b ... -> (n b) ...')
 
         end_time = time.time()
 
@@ -287,6 +327,7 @@ class CryoAI(nn.Module):
                        'fproj_prectf': pred_fproj_prectf,
                        'pred_ctf_params': pred_ctf_params,
                        'pred_shift_params': pred_shift_params,
+                       'prob': prob,
                        'times': times}
 
         # Make sure we are in sync by bringing back the proj to the primal domain
