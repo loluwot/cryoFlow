@@ -1,0 +1,11 @@
+.lh
+.hf_home
+.ipynb_checkpoints
+.venv-backups
+iframe_figures
+logs*/
+pretrained_models/
+results/
+simulated_starfiles/
+*.pt
+__pycache__
