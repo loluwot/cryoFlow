@@ -66,15 +66,24 @@ class ConvexGradientLayer:
         return res, -ConvexGradientLayer.log_det(p, tup, res)
     
     def log_det(p, tup, res, eps=eps):
+        # tangent spaces of input and output
         ep = orthogonal(p) # (B, 3, 4)
         eres = orthogonal(res) # (B, 3, 4)
+        
+        # autodiff computed jacobian
         Js = torch.vmap(jacrev(ConvexGradientLayer.transform_))(p, *tup) # (B, 4, 4)
+        
+        # projected jacobian
         d = torch.einsum('b l i, b i j, b k j -> b l k', ep, Js, eres)
+        # numerically stable det.
         d = (torch.cross(d[..., 0], d[..., 1], dim=-1) * d[..., 2]).sum(axis=-1).abs()
         return (d + eps).log()
     
     def n_features(config):
         return config.hidden_norm_size * 6 + 1
+
+    ### code for sampling multiple modes from the distribution;
+    ### ultimately unused, but could be useful in future experiments
 
     # def sample_mode(params, num_samples=200, k=2):
     #     bs = params[0].shape[0]
@@ -100,14 +109,20 @@ class ConvexGradientLayer:
     #     # k B 4 -> (k B) 4
     #     return r_sorted[indices.T, torch.arange(bs)].reshape(-1, 4), logp_abs[p_sort_idx][indices.T, torch.arange(bs)].reshape(-1)
 
-    def sample_mode(params, num_samples=200, k=2, bandwidth=50):
+    def sample_mode(params, num_samples=200):
         bs = params[0].shape[0]
+        # uniformly sampled quaternions
         r = torch.randn(num_samples, bs, 4).to(params[0]) 
         r /= r.norm(dim=-1, keepdim=True)   
+        
+        # transformed samples and associated log prob.
         r_new, p_x = torch.vmap(ConvexGradientLayer.transform, in_dims=(0, None))(r, params)
         p_new = (p_x - p_x.amax(dim=0)).exp()#.cpu()
+        
         return r_new[p_new.argmax(dim=0), torch.arange(bs)].reshape(-1, 4), p_x[p_new.argmax(dim=0), torch.arange(bs)].reshape(-1)
             
+            
+## unused tests of Moebius transforms
 class MoebiusLayer:
     def process_params(enc):
         qs = rearrange(enc, 'b (n d) -> b n d', d=4)
